@@ -4,7 +4,7 @@
 
 ## Auth
 
-fitbitのアカウントを作成後、ログインして[apps - dev.fitbit.com](https://dev.fitbit.com/apps) からアプリケーションの登録を行う
+fitbitのアカウントを作成後、ログインして [apps - dev.fitbit.com](https://dev.fitbit.com/apps) からアプリケーションの登録を行う
 
 ![register](./images/register.png)
 
@@ -127,3 +127,5 @@ profileを叩いた結果は以下の通り。
 | Endpoint | Description |
 |---|---|
 | Active Zone Minutes Time Series | 1日を通してheart-pumping活動を取得する |
+| ~ | ~ |
+| Sleep | 睡眠パターンを取得する。「Get Sleep Log List」は過去の睡眠データが取得できる |
