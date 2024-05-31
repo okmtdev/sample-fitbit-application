@@ -1,27 +1,30 @@
 
 import httpx
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def main():
-    print("main")
     client = Client()
-    print(client.get_sleep_log_list())
+    print(client.get_sleep_log_list().json())
 
 class Client():
     HOST = 'https://api.fitbit.com/'
     SLEEP_LOG_LIST_PATH = "/1.2/user/{}/sleep/list.json" # https://dev.fitbit.com/build/reference/web-api/sleep/get-sleep-log-list/
-    user_id = 'C3HCMK'
+    PROFILE_PATH = "/1/user/-/profile.json"
+    user_id = '23PHG5'
 
     def bearer_header(self):
-        return {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIyM1BIRzUiLCJzdWIiOiJDM0hDTUsiLCJpc3MiOiJGaXRiaXQiLCJ0eXAiOiJhY2Nlc3NfdG9rZW4iLCJzY29wZXMiOiJyc29jIHJlY2cgcnNldCByb3h5IHJwcm8gcm51dCByc2xlIHJjZiByYWN0IHJsb2MgcnJlcyByd2VpIHJociBydGVtIiwiZXhwIjoxNzE2NjI4MTMzLCJpYXQiOjE3MTY1OTkzMzN9.j9OZWRs0S84G1Pyzrir-pdfgxSIxGJs8i9IzgigzPAk"}
+        return {"Authorization": "Bearer " + os.environ['bearer']}
 
     def get_sleep_log_list(self):
-        print("get_sleep_log_list")
-        url = self.HOST + self.SLEEP_LOG_LIST_PATH.format(self.user_id)
-        print(url)
+        url = self.HOST + self.PROFILE_PATH.format(self.user_id)
 
         headers = self.bearer_header()
 
-        res = httpx.get(url, headers=headers)
+        params = {'sort': 'desc', 'offset': 0, 'limit': 100}
+        res = httpx.get(url, headers=headers, params=params)
         return res
 
 if __name__ == '__main__':
