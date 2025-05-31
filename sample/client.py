@@ -1,17 +1,19 @@
 import httpx
 import datetime
+from utils.api import ApiClient
 import asyncio
 import time
 import base64
 import config
 from settings import Settings
 import tokens
-import constant
+import constants
 from errors import InternalError
+from services.sleep import Sleep
+from constants import API_BASE_URL, API_TOKEN_URL
 
 
 conf = config.Config()
-const = constant.Constant()
 
 
 class Client():
@@ -20,8 +22,8 @@ class Client():
         self.client_secret = settings.client_secret
         self.refresh_token = settings.refresh_token
         self.scopes = settings.scopes
-        self.API_BASE_URL = const.API_BASE_URL
-        self.API_TOKEN_URL = const.API_TOKEN_URL
+        self.API_BASE_URL = API_BASE_URL
+        self.API_TOKEN_URL = API_TOKEN_URL
         self.tokens = tokens.Tokens()
 
 
@@ -48,8 +50,8 @@ class Client():
         self.tokens.set("token_type", updated["token_type"])
         self.tokens.set("user_id", updated["user_id"])
 
-        #with open(self.TOKEN_FILE, 'w') as f:
-        #    json.dump(updated_tokens, f, indent=2) # indentを追加して見やすく
+        Settings().update_refresh_token(updated["refresh_token"])
+        self.refresh_token = updated["refresh_token"]
         print(f"トークン情報を更新しました。")
 
     def load_tokens(self):
@@ -164,52 +166,6 @@ class Client():
             return client, access_token
 
 
-    async def make_api_request(self, client: httpx.AsyncClient, access_token: str, endpoint: str):
-        """Fitbit APIにリクエストを送信する (リフレッシュ試行は get_authenticated_session に移管)"""
-        if not client or not access_token:
-            print("APIリクエストに必要なクライアントまたはアクセストークンがありません。")
-            return None
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/json"
-        }
-        try:
-            response = await client.get(f"{self.API_BASE_URL}{endpoint}", headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            # 401エラーは get_authenticated_session で事前にリフレッシュ試行済みなので、
-            # ここで再度401が出た場合はリフレッシュしても解決しない問題の可能性が高い
-            print(f"APIリクエストエラー (ステータスコード: {e.response.status_code}): {e.response.text}")
-            if e.response.status_code == 401:
-                print("認証エラーが発生しました。アクセストークンが無効か、スコープが不足している可能性があります。")
-            elif e.response.status_code == 403:
-                 print("アクセスが拒否されました。必要なスコープがトークンに付与されているか確認してください。")
-            return None
-        except httpx.RequestError as e:
-            print(f"リクエストエラー: {e}")
-            return None
-
-    # ------------------------------------------------------------------------------
-    # データ取得関数 (API呼び出し部分の引数変更に対応)
-    # ------------------------------------------------------------------------------
-    async def get_sleep_data(self, api_client: httpx.AsyncClient, access_token: str, date_str: str):
-        print(f"\n--- {date_str} の睡眠データを取得中 ---")
-        endpoint = f"/1.2/user/-/sleep/date/{date_str}.json"
-        return await self.make_api_request(api_client, access_token, endpoint)
-
-    async def get_blood_pressure_data(self, api_client: httpx.AsyncClient, access_token: str, date_str: str):
-        print(f"\n--- {date_str} の血圧データを取得中 ---")
-        print("注意: 血圧APIはアクセスが制限されており、データ取得に失敗する可能性があります。")
-        endpoint = f"/1/user/-/bp/date/{date_str}.json"
-        return await self.make_api_request(api_client, access_token, endpoint)
-
-    async def get_activity_summary_data(self, api_client: httpx.AsyncClient, access_token: str, date_str: str):
-        print(f"\n--- {date_str} の活動概要データを取得中 (歩行データなど) ---")
-        endpoint = f"/1/user/-/activities/date/{date_str}.json"
-        return await self.make_api_request(api_client, access_token, endpoint)
-
     # ------------------------------------------------------------------------------
     # メイン処理 (変更)
     # ------------------------------------------------------------------------------
@@ -250,45 +206,28 @@ class Client():
                 return
 
             # データ取得対象の日付
-            target_date_str = datetime.date.today().strftime("%Y-%m-%d")
+            target_date = datetime.date.today().strftime("%Y-%m-%d")
 
-            print(f"\nFitbitデータ取得プログラム ({target_date_str} のデータ)")
+            print(f"\nFitbitデータ取得プログラム ({target_date} のデータ)")
             print("==============================================")
 
             # 睡眠データの取得
-            sleep_data = await self.get_sleep_data(client_session, access_token, target_date_str)
+            api_client_instance = ApiClient(access_token=access_token, http_client=client_session)
+            sleep = Sleep(client=api_client_instance)
+            sleep_data = await sleep.get_by_date(target_date)
             if sleep_data:
                 print("睡眠データ取得成功:")
                 if sleep_data.get("summary"):
-                    print(f"  総睡眠時間 (分): {sleep_data['summary'].get('totalMinutesAsleep')}")
+                    print(f"  総睡眠時間 (分): {sleep_data['summary'].get('totalMinutesAsleep')}, "
+                          + f"深い眠り（分）: {sleep_data['summary'].get('stages').get('deep')}, "
+                          + f"浅い眠り（分）: {sleep_data['summary'].get('stages').get('light')}, "
+                          + f"レム睡眠（分）: {sleep_data['summary'].get('stages').get('rem')}, "
+                          + f"覚醒状態（分）: {sleep_data['summary'].get('stages').get('wake')}")
                 if sleep_data.get("sleep"):
-                    for i, log in enumerate(sleep_data["sleep"]):
-                        print(f"  睡眠ログ {i+1}: 開始時刻: {log.get('startTime')}, 効率: {log.get('efficiency')}%")
-
-            # 血圧データの取得
-            blood_pressure_data = await self.get_blood_pressure_data(client_session, access_token, target_date_str)
-            if blood_pressure_data:
-                print("血圧データ取得成功:")
-                if blood_pressure_data.get("bp"):
-                    for i, record in enumerate(blood_pressure_data["bp"]):
-                        print(f"  血圧記録 {i+1}: 時刻: {record.get('time')}, 最高: {record.get('systolic')}, 最低: {record.get('diastolic')}")
-                else:
-                    print("  血圧データは記録されていませんでした。")
-            else:
-                print("  血圧データの取得に失敗したか、アクセスが許可されていません。")
-
-
-            # 歩行データ (活動概要から取得)
-            activity_summary = await self.get_activity_summary_data(client_session, access_token, target_date_str)
-            if activity_summary:
-                print("活動概要データ取得成功:")
-                if activity_summary.get("summary"):
-                    steps = activity_summary["summary"].get("steps")
-                    calories_out = activity_summary["summary"].get("caloriesOut")
-                    print(f"  歩数: {steps}")
-                    print(f"  消費カロリー: {calories_out}")
-                else:
-                    print("  活動概要のサマリーが見つかりませんでした。")
+                    for i, record in enumerate(sleep_data["sleep"]):
+                        print(f"  睡眠レコード {i+1}: 開始時刻: {record.get('startTime')}, 睡眠効率: {record.get('efficiency')}%") # minutesAsleep/timeInBed
+                        for j, log in enumerate(record["levels"]["data"]):
+                            print(f"    ログ {j+1}: 時刻: {log.get('dateTime')}, 種類: {log.get('level')}, 時間（秒）: {log.get('seconds')}")
 
         print("\n==============================================")
         print("処理完了")
