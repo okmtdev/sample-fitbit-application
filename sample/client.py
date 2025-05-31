@@ -12,6 +12,7 @@ from services.sleep import Sleep
 from services.heart_rate import HeartRate
 from services.spo2 import Spo2
 from services.temperature import Temperature
+from services.activity import Activity
 from constants import API_BASE_URL, API_TOKEN_URL
 import datetime
 
@@ -133,17 +134,6 @@ class Client():
         リフレッシュトークンがない、またはリフレッシュに失敗した場合は None を返す。
         """
         tokens = self.load_tokens()
-
-        if not tokens or 'refresh_token' not in tokens or not tokens['refresh_token']:
-            print("""
-            {
-              "refresh_token": "あなたのリフレッシュトークン",
-              "access_token": "(あれば)",
-              "expires_at": 0 // (access_tokenの有効期限Unixタイムスタンプ、あれば)
-            }
-            """)
-            return None, None
-
         current_time = time.time()
         access_token = tokens.get('access_token')
         expires_at = tokens.get('expires_at', 0) # expires_at がなければ期限切れとみなす
@@ -151,9 +141,9 @@ class Client():
         async with httpx.AsyncClient() as client:
             if not access_token or current_time >= expires_at:
                 if access_token: # 期限切れの場合
-                     print("アクセストークンの有効期限が切れています。リフレッシュを試みます。")
+                    print("アクセストークンの有効期限が切れています。リフレッシュを試みます。")
                 else: # アクセストークン自体がない場合
-                     print("アクセストークンが見つかりません。リフレッシュトークンを使って取得します。")
+                    print("アクセストークンが見つかりません。リフレッシュトークンを使って取得します。")
 
                 refreshed_tokens = await self.refresh_access_token(client, tokens['refresh_token'])
                 if not refreshed_tokens:
@@ -300,9 +290,9 @@ class Client():
                 for day_data in spo2_range_data:
                     if day_data.get("value"):
                         print(f"  日付: {day_data.get('dateTime')}, "
-                              f"平均: {day_data['value'].get('avg')}%, "
-                              f"最小: {day_data['value'].get('min')}%, "
-                              f"最大: {day_data['value'].get('max')}%")
+                            + f"平均: {day_data['value'].get('avg')}%, "
+                            + f"最小: {day_data['value'].get('min')}%, "
+                            + f"最大: {day_data['value'].get('max')}%")
                     else:
                         print(f"  日付: {day_data.get('dateTime')}, データがありませんでした。")
 
@@ -343,8 +333,8 @@ class Client():
                 print(f"\n日中心拍数 ({target_date}, 1分間隔):")
                 print(f"  データセット数: {len(hr_intraday_data['activities-heart-intraday'].get('dataset', []))}")
                 # 詳細なデータ表示は長くなるため、一部のみ、または集計値の表示を推奨
-                # for entry in hr_intraday_data["activities-heart-intraday"].get("dataset", [])[:5]: # 最初の5件
-                #     print(f"    時刻: {entry.get('time')}, 心拍数: {entry.get('value')}")
+                for entry in hr_intraday_data["activities-heart-intraday"].get("dataset", [])[:5]: # 最初の5件
+                    print(f"    時刻: {entry.get('time')}, 心拍数: {entry.get('value')}")
 
 
             # 心拍数時系列 (Date Range) - 日毎のサマリー
@@ -371,6 +361,136 @@ class Client():
 
                     print("\n==============================================")
                     print("処理完了")
+
+
+            activity = Activity(client=api_client_instance)
+            target_date_summary = "2025-05-31" # 必要に応じて変更してください (存在するデータの日付)
+            print(f"\n--- {target_date_summary}のアクティビティサマリー ---")
+            daily_summary = await activity.get_summary_by_date(target_date_summary)
+
+            if daily_summary and daily_summary.get("summary"):
+                summary = daily_summary["summary"]
+                steps = summary.get("steps", "N/A")
+                calories_out = summary.get("caloriesOut", "N/A")
+
+                total_distance = "N/A"
+                if summary.get("distances"):
+                    for dist_entry in summary["distances"]:
+                        if dist_entry.get("activity") == "total": # "total" が総距離を示す
+                            total_distance = dist_entry.get("distance", "N/A")
+                            break
+                        
+                print(f"  歩数: {steps} 歩")
+                print(f"  総消費カロリー: {calories_out} kcal")
+                print(f"  総移動距離: {total_distance} km")
+            elif daily_summary is None: # APIエラーまたはその他の予期せぬエラー
+                 print(f"  {target_date_summary}のアクティビティサマリーの取得中にエラーが発生しました。詳細はログを確認してください。")
+            else: # データが存在しない場合 (例: 204 No Content)
+                print(f"  {target_date_summary}のアクティビティサマリーデータはありませんでした。")
+
+            # --- B. 過去7日間の日毎の歩数と集計 ---
+            print(f"\n--- 過去7日間の日毎の歩数 (今日基準) ---")
+            # 'today' を基準日とし、'7d' (過去7日間) のデータを取得
+            steps_7d_data = await activity.get_time_series(resource_path="steps", base_date="today", period="7d")
+
+            if steps_7d_data and steps_7d_data.get("activities-steps"):
+                entries = steps_7d_data["activities-steps"]
+                if entries:
+                    total_steps_7d = 0
+                    print("  日毎の歩数:")
+                    for entry in entries:
+                        date = entry.get("dateTime")
+                        value = int(entry.get("value", 0))
+                        total_steps_7d += value
+                        print(f"    {date}: {value} 歩")
+
+                    avg_steps_7d = total_steps_7d / len(entries) if entries else 0
+                    print(f"  過去7日間の合計歩数: {total_steps_7d} 歩")
+                    print(f"  過去7日間の平均歩数: {avg_steps_7d:.0f} 歩/日")
+                else:
+                    print("  過去7日間の歩数データが空でした。")
+            elif steps_7d_data is None:
+                print(f"  過去7日間の歩数データの取得中にエラーが発生しました。詳細はログを確認してください。")
+            else:
+                print("  過去7日間の歩数データは取得できませんでした（データなしまたは空の応答）。")
+
+
+            # --- C. 特定の期間 (例: 先週月曜日から日曜日) の総消費カロリー ---
+            today = datetime.datetime.now()
+            start_of_last_week = today - datetime.timedelta(days=today.weekday() + 7) # 先週の月曜日
+            end_of_last_week = start_of_last_week + datetime.timedelta(days=6)         # 先週の日曜日
+
+            start_date_calories = start_of_last_week.strftime("%Y-%m-%d")
+            end_date_calories = end_of_last_week.strftime("%Y-%m-%d")
+
+            print(f"\n--- {start_date_calories} から {end_date_calories} の消費カロリー ---")
+            calories_last_week = await activity.get_time_series_by_date_range(
+                resource_path="calories", start_date=start_date_calories, end_date=end_date_calories
+            )
+
+            if calories_last_week and calories_last_week.get("activities-calories"):
+                entries = calories_last_week["activities-calories"]
+                if entries:
+                    total_calories_period = 0
+                    print("  日毎の消費カロリー:")
+                    for entry in entries:
+                        date = entry.get("dateTime")
+                        value = int(entry.get("value", 0))
+                        total_calories_period += value
+                        print(f"    {date}: {value} kcal")
+
+                    avg_calories_period = total_calories_period / len(entries) if entries else 0
+                    print(f"  期間中の合計消費カロリー: {total_calories_period} kcal")
+                    print(f"  期間中の平均消費カロリー: {avg_calories_period:.0f} kcal/日")
+                else:
+                    print(f"  {start_date_calories} から {end_date_calories} のカロリーデータが空でした。")
+            elif calories_last_week is None:
+                print(f"  {start_date_calories} から {end_date_calories} のカロリーデータの取得中にエラーが発生しました。")
+            else:
+                print(f"  {start_date_calories} から {end_date_calories} のカロリーデータは取得できませんでした。")
+
+
+            # --- D. 過去1ヶ月間の日毎の移動距離と集計 ---
+            print(f"\n--- 過去1ヶ月間の日毎の移動距離 (今日基準, '1m'ピリオド使用) ---")
+            distance_1m_data = await activity.get_time_series(resource_path="distance", base_date="today", period="1m")
+
+            if distance_1m_data and distance_1m_data.get("activities-distance"):
+                entries = distance_1m_data["activities-distance"]
+                if entries:
+                    total_distance_1m = 0.0
+                    days_with_data = 0
+                    print("  日毎の移動距離:")
+                    for entry in entries:
+                        date = entry.get("dateTime")
+                        value_str = entry.get("value", "0")
+                        try:
+                            value = float(value_str)
+                            print(f"    {date}: {value:.2f} km")
+                            if value > 0: # 実際に移動があった日のみを集計対象とする場合
+                                total_distance_1m += value
+                                days_with_data += 1
+                        except ValueError:
+                            print(f"    {date}: データ形式エラー ({value_str})")
+
+                    if days_with_data > 0:
+                        avg_distance_1m = total_distance_1m / days_with_data
+                        print(f"\n  過去1ヶ月間の合計移動距離 (記録日ベース): {total_distance_1m:.2f} km")
+                        print(f"  過去1ヶ月間の平均移動距離 (記録日ベース): {avg_distance_1m:.2f} km/日")
+                        print(f"  (記録があった日数: {days_with_data}日 / 全{len(entries)}日中)")
+                    elif entries: # データはあるが全て0kmだった場合
+                        print(f"\n  過去1ヶ月間の合計移動距離: 0.00 km")
+                    else: # entries が空のケース (通常は上の条件で捕捉されるはず)
+                        print("  過去1ヶ月間の移動距離データが空でした。")
+
+                else: # "activities-distance" キーはあるが、その値 (リスト) が空の場合
+                    print("  過去1ヶ月間の移動距離データが空でした。")
+            elif distance_1m_data is None:
+                print(f"  過去1ヶ月間の移動距離データの取得中にエラーが発生しました。")
+            else:
+                print("  過去1ヶ月間の移動距離データは取得できませんでした（データなしまたは空の応答）。")
+
+
+
 
 
 if __name__ == "__main__":
