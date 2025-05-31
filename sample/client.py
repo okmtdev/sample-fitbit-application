@@ -7,10 +7,13 @@ import base64
 import config
 from settings import Settings
 import tokens
-import constants
 from errors import InternalError
 from services.sleep import Sleep
+from services.heart_rate import HeartRate
+from services.spo2 import Spo2
+from services.temperature import Temperature
 from constants import API_BASE_URL, API_TOKEN_URL
+import datetime
 
 
 conf = config.Config()
@@ -167,7 +170,7 @@ class Client():
 
 
     # ------------------------------------------------------------------------------
-    # メイン処理 (変更)
+    # 保存処理
     # ------------------------------------------------------------------------------
     async def save(self):
         if self.client_id == None or self.client_secret == None:
@@ -205,32 +208,169 @@ class Client():
                 print("有効なアクセストークンを取得できませんでした。プログラムを終了します。")
                 return
 
-            # データ取得対象の日付
-            target_date = datetime.date.today().strftime("%Y-%m-%d")
+            # 今日
+            #target_date = datetime.date.today().strftime("%Y-%m-%d")
+            # 昨日
+            today = datetime.date.today()
+            yesterday = today - datetime.timedelta(days=1)
+            target_date = yesterday.strftime("%Y-%m-%d")
+
 
             print(f"\nFitbitデータ取得プログラム ({target_date} のデータ)")
             print("==============================================")
 
-            # 睡眠データの取得
+            # --- 睡眠データの取得と表示 ---
             api_client_instance = ApiClient(access_token=access_token, http_client=client_session)
             sleep = Sleep(client=api_client_instance)
             sleep_data = await sleep.get_by_date(target_date)
-            if sleep_data:
+            if sleep_data["sleep"]:
                 print("睡眠データ取得成功:")
                 if sleep_data.get("summary"):
                     print(f"  総睡眠時間 (分): {sleep_data['summary'].get('totalMinutesAsleep')}, "
-                          + f"深い眠り（分）: {sleep_data['summary'].get('stages').get('deep')}, "
-                          + f"浅い眠り（分）: {sleep_data['summary'].get('stages').get('light')}, "
-                          + f"レム睡眠（分）: {sleep_data['summary'].get('stages').get('rem')}, "
-                          + f"覚醒状態（分）: {sleep_data['summary'].get('stages').get('wake')}")
+                        + f"深い眠り（分）: {sleep_data['summary'].get('stages').get('deep')}, "
+                        + f"浅い眠り（分）: {sleep_data['summary'].get('stages').get('light')}, "
+                        + f"レム睡眠（分）: {sleep_data['summary'].get('stages').get('rem')}, "
+                        + f"覚醒状態（分）: {sleep_data['summary'].get('stages').get('wake')}")
                 if sleep_data.get("sleep"):
                     for i, record in enumerate(sleep_data["sleep"]):
                         print(f"  睡眠レコード {i+1}: 開始時刻: {record.get('startTime')}, 睡眠効率: {record.get('efficiency')}%") # minutesAsleep/timeInBed
                         for j, log in enumerate(record["levels"]["data"]):
                             print(f"    ログ {j+1}: 時刻: {log.get('dateTime')}, 種類: {log.get('level')}, 時間（秒）: {log.get('seconds')}")
+            else:
+                print("睡眠データ無し")
 
-        print("\n==============================================")
-        print("処理完了")
+            # --- 体温データの取得と表示 ---
+            print("\n--- 体温データ ---")
+            temperature_client = Temperature(client=api_client_instance) # ApiClientインスタンスを渡す
+
+            # 皮膚温度 (単日)
+            skin_temp_single_date_data = await temperature_client.get_skin_temp_by_date(target_date)
+            print(skin_temp_single_date_data)
+            if skin_temp_single_date_data and skin_temp_single_date_data.get("tempSkin"):
+                print(f"\n皮膚温度 ({target_date}):")
+                for record in skin_temp_single_date_data["tempSkin"]:
+                    print(f"  記録ID: {record.get('logId')}, 日時: {record.get('dateTime')}, "
+                        + f"値: {record.get('value').get('value')}°C (基準からの偏差), "
+                        + f"夜間平均: {record.get('value').get('nightlyMean')}") # nightlyMean はない場合がある
+
+            # 皮膚温度 (期間) - 例: target_date から3日前までのデータを取得
+            start_date_temp = (datetime.datetime.strptime(target_date, "%Y-%m-%d") - datetime.timedelta(days=2)).strftime("%Y-%m-%d") # 3日間 (当日含む)
+            end_date_temp = target_date
+
+            skin_temp_range_data = await temperature_client.get_skin_temp_by_date_range(start_date_temp, end_date_temp)
+            print(skin_temp_range_data)
+            if skin_temp_range_data and skin_temp_range_data.get("tempSkin"):
+                print(f"\n皮膚温度 ({start_date_temp} - {end_date_temp}):")
+                for record in skin_temp_range_data["tempSkin"]:
+                    print(f"  記録ID: {record.get('logId')}, 日時: {record.get('dateTime')}, "
+                        + f"値: {record.get('value').get('value')}°C (基準からの偏差), "
+                        + f"夜間平均: {record.get('value').get('nightlyMean')}") # nightlyMean はない場合がある
+
+            # 体幹温度 (単日) - 注意: このAPIは一部のデバイス/ユーザーでのみ利用可能です。
+            core_temp_data = await temperature_client.get_core_temp_by_date(target_date)
+            print(core_temp_data)
+            if core_temp_data and core_temp_data.get("tempCore"):
+                print(f"\n体幹温度 ({target_date}):")
+                for record in core_temp_data["tempCore"]:
+                    print(f"  記録ID: {record.get('logId')}, 日時: {record.get('dateTime')}, "
+                        + f"値: {record.get('value')}°C, 集計期間(分): {record.get('logType')}") # logTypeは集計期間を示唆
+
+            # --- SpO2 データの取得と表示 ---
+            print("\n--- SpO2データ ---")
+            spo2_client = Spo2(client=api_client_instance)
+
+            # SpO2 (単日)
+            spo2_single_date_data = await spo2_client.get_by_date(target_date)
+            if spo2_single_date_data and spo2_single_date_data.get("value"):
+                print(f"\nSpO2 ({target_date}):")
+                print(f"  平均: {spo2_single_date_data['value'].get('avg')}%, "
+                    + f"最小: {spo2_single_date_data['value'].get('min')}%, "
+                    + f"最大: {spo2_single_date_data['value'].get('max')}%")
+            elif spo2_single_date_data: # データはあるが 'value' キーがない場合 (e.g., 204 No Content)
+                print(f"\nSpO2 ({target_date}): データがありませんでした。")
+
+
+            # SpO2 (期間) - 例: target_date から3日前までのデータを取得
+            start_date_spo2 = (datetime.datetime.strptime(target_date, "%Y-%m-%d") - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+            end_date_spo2 = target_date
+
+            spo2_range_data = await spo2_client.get_by_date_range(start_date_spo2, end_date_spo2)
+            if spo2_range_data: # レスポンスのキーが "spo2" で、その中にリストが入る
+                print(f"\nSpO2 ({start_date_spo2} - {end_date_spo2}):")
+                for day_data in spo2_range_data:
+                    if day_data.get("value"):
+                        print(f"  日付: {day_data.get('dateTime')}, "
+                              f"平均: {day_data['value'].get('avg')}%, "
+                              f"最小: {day_data['value'].get('min')}%, "
+                              f"最大: {day_data['value'].get('max')}%")
+                    else:
+                        print(f"  日付: {day_data.get('dateTime')}, データがありませんでした。")
+
+
+            # --- 心拍数データの取得と表示 ---
+            print("\n--- 心拍数データ ---")
+            heart_rate_client = HeartRate(client=api_client_instance)
+
+            # 心拍変動 (HRV) (単日)
+            hrv_single_date_data = await heart_rate_client.get_hrv_by_date(target_date)
+            if hrv_single_date_data and hrv_single_date_data.get("hrv"):
+                print(f"\n心拍変動 (HRV) ({target_date}):")
+                for record in hrv_single_date_data["hrv"]:
+                    if record.get("value") and record["value"].get("dailyRmssd") is not None:
+                        print(f"  RMSSD: {record['value']['dailyRmssd']}, "
+                            + f"低周波 (LF): {record['value'].get('deepRmssd')}") # deepRmssd は睡眠中のHRVの指標
+                    else:
+                        print(f"  HRVデータ詳細なし: {record}")
+
+
+            # 心拍変動 (HRV) (期間)
+            start_date_hrv = (datetime.datetime.strptime(target_date, "%Y-%m-%d") - datetime.timedelta(days=6)).strftime("%Y-%m-%d") # 7日間
+            end_date_hrv = target_date
+            hrv_range_data = await heart_rate_client.get_hrv_by_date_range(start_date_hrv, end_date_hrv)
+            if hrv_range_data and hrv_range_data.get("hrv"):
+                print(f"\n心拍変動 (HRV) ({start_date_hrv} - {end_date_hrv}):")
+                for record in hrv_range_data["hrv"]:
+                    if record.get("value") and record["value"].get("dailyRmssd") is not None:
+                        print(f"  日付: {record.get('dateTime')}, RMSSD: {record['value']['dailyRmssd']}, "
+                            + f"低周波 (LF): {record['value'].get('deepRmssd')}")
+                    else:
+                        print(f"  日付: {record.get('dateTime')}, HRVデータ詳細なし")
+
+
+            # 心拍数時系列 (Intraday) - 1分間の詳細レベルで取得
+            hr_intraday_data = await heart_rate_client.get_heart_rate_intraday_by_date(target_date, detail_level="1min")
+            if hr_intraday_data and hr_intraday_data.get("activities-heart-intraday"):
+                print(f"\n日中心拍数 ({target_date}, 1分間隔):")
+                print(f"  データセット数: {len(hr_intraday_data['activities-heart-intraday'].get('dataset', []))}")
+                # 詳細なデータ表示は長くなるため、一部のみ、または集計値の表示を推奨
+                # for entry in hr_intraday_data["activities-heart-intraday"].get("dataset", [])[:5]: # 最初の5件
+                #     print(f"    時刻: {entry.get('time')}, 心拍数: {entry.get('value')}")
+
+
+            # 心拍数時系列 (Date Range) - 日毎のサマリー
+            # 例: target_date から過去7日間のデータを取得 (end_date が target_date となる)
+            base_date_hr_range = (datetime.datetime.strptime(target_date, "%Y-%m-%d") - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+            end_date_hr_range = target_date
+
+            hr_date_range_data = await heart_rate_client.get_heart_rate_by_date_range(base_date_hr_range, end_date_hr_range)
+            if hr_date_range_data and hr_date_range_data.get("activities-heart"):
+                print(f"\n心拍数サマリー ({base_date_hr_range} - {end_date_hr_range}):")
+                for day_summary in hr_date_range_data["activities-heart"]:
+                    print(f"  日付: {day_summary.get('dateTime')}")
+                    if day_summary.get("value") and day_summary["value"].get("heartRateZones"):
+                        resting_hr = day_summary["value"].get('restingHeartRate', 'N/A')
+                        print(f"    安静時心拍数: {resting_hr}")
+                        print("    心拍ゾーン:")
+                        for zone in day_summary["value"]["heartRateZones"]:
+                            print(f"      {zone.get('name')}: "
+                                + f"閾値 {zone.get('min')}-{zone.get('max')} bpm, "
+                                + f"滞在時間 {zone.get('minutes')} 分, "
+                                + f"消費カロリー {zone.get('caloriesOut')}")
+                    else:
+                        print("    心拍数データ詳細なし")
+
+                    print("\n==============================================")
+                    print("処理完了")
 
 
 if __name__ == "__main__":
