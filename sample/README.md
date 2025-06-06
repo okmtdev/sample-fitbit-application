@@ -1,3 +1,5 @@
 # sample
 
-Describe your project here.
+```bash
+uv run python client.py
+```
